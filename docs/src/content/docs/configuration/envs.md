@@ -102,6 +102,14 @@ Method used to verify proxy functionality:
 - `status`: Checks HTTP status code from a test request
 - `download`: Downloads a file and verifies minimum size received
 
+### PROXY_PING_MODE
+
+- CLI: `--proxy-ping-mode`
+- Default: `default`
+- Values: `default`, `keepalive`
+
+[Details](../check-methods/)
+
 ### PROXY_IP_CHECK_URL
 
 - CLI: `--proxy-ip-check-url`

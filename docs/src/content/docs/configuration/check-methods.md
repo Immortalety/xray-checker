@@ -96,3 +96,13 @@ PROXY_DOWNLOAD_MIN_SIZE=51200
 - Use **status** for fast checks with minimal bandwidth
 - Use **download** when you need to verify data transfer capability
 :::
+
+## Latency measurement mode
+
+Set `PROXY_PING_MODE=keepalive` (CLI: `--proxy-ping-mode=keepalive`) to exclude connection setup from latency, following [Happ's keepalive mode](https://docs.happ.info/main/dev-docs/app-management#proxy-ping-mode). The default, `default`, keeps the existing single-request measurement including connection setup.
+
+For each proxy check, the checker sends a warm-up GET, reads its entire response, then measures time to the first response byte of a second GET using the same HTTP transport and established connection (including TLS for HTTPS URLs). This applies to `ip`, `status`, and `download`; the second response determines the check result. Idle connections are closed after each check.
+
+The endpoint must support persistent connections. If the measured request opens a new connection, the check fails instead of reporting a latency that includes a new handshake. Each request has its own configured timeout. Warm-up downloads read the entire file, increasing traffic and potentially requiring a larger download timeout; prefer a small response endpoint for latency checks.
+
+Example: `--proxy-check-method=status --proxy-ping-mode=keepalive --proxy-status-check-url=https://cp.cloudflare.com/generate_204`.

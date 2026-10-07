@@ -32,6 +32,7 @@ type CLI struct {
 	} `embed:"" prefix:""`
 
 	Proxy struct {
+		PingMode         string `name:"proxy-ping-mode" help:"Latency measurement mode: default or keepalive (warm connection)" default:"default" enum:"default,keepalive" env:"PROXY_PING_MODE"`
 		CheckInterval    int    `name:"proxy-check-interval" help:"Interval for proxy checks in seconds" default:"300" env:"PROXY_CHECK_INTERVAL"`
 		CheckConcurrency int    `name:"proxy-check-concurrency" help:"Max proxies checked in parallel per cycle (0 = unlimited)" default:"0" env:"PROXY_CHECK_CONCURRENCY"`
 		CheckMethod      string `name:"proxy-check-method" help:"Method for checking proxy, ip, status or download" default:"ip" env:"PROXY_CHECK_METHOD"`

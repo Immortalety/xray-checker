@@ -1,13 +1,13 @@
 package checker
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"xray-checker/logger"
@@ -28,6 +28,7 @@ type ProxyChecker struct {
 	downloadURL      string
 	downloadTimeout  int
 	downloadMinSize  int64
+	pingMode         string
 	checkMethod      string
 	checkConcurrency int // max proxies checked in parallel per cycle; 0 = unlimited
 	mu               sync.RWMutex
@@ -43,8 +44,13 @@ type proxyResult struct {
 	lastCheck time.Time
 }
 
-func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL string, ipCheckTimeout int, genMethodURL string, downloadURL string, downloadTimeout int, downloadMinSize int64, checkMethod string, checkConcurrency int) *ProxyChecker {
+func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL string, ipCheckTimeout int, genMethodURL string, downloadURL string, downloadTimeout int, downloadMinSize int64, checkMethod string, checkConcurrency int, pingMode ...string) *ProxyChecker {
+	mode := "default"
+	if len(pingMode) > 0 {
+		mode = pingMode[0]
+	}
 	return &ProxyChecker{
+		pingMode:  mode,
 		proxies:   proxies,
 		startPort: startPort,
 		ipCheck:   ipCheckURL,
@@ -140,10 +146,12 @@ func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy:             http.ProxyURL(proxyURLParsed),
-			DisableKeepAlives: true,
+			DisableKeepAlives: pc.pingMode != "keepalive",
 		},
 		Timeout: time.Second * time.Duration(pc.ipCheckTimeout),
 	}
+
+	defer client.CloseIdleConnections()
 
 	var checkSuccess bool
 	var checkErr error
@@ -177,22 +185,56 @@ func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
 	}
 }
 
+// doLatencyRequest warms the same transport before measuring TTFB. Reading the
+// entire warm-up body is required before an HTTP/1 connection can be reused.
+func (pc *ProxyChecker) doLatencyRequest(client *http.Client, req *http.Request) (*http.Response, time.Duration, error) {
+	keepalive := pc.pingMode == "keepalive"
+	if keepalive {
+		resp, err := client.Do(req.Clone(req.Context()))
+		if err != nil {
+			return nil, 0, fmt.Errorf("keepalive warm-up: %w", err)
+		}
+		_, readErr := io.Copy(io.Discard, resp.Body)
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			return nil, 0, fmt.Errorf("keepalive warm-up body: %w", readErr)
+		}
+		if closeErr != nil {
+			return nil, 0, fmt.Errorf("keepalive warm-up close: %w", closeErr)
+		}
+	}
+
+	var ttfb atomic.Int64
+	var freshConnection atomic.Bool
+	start := time.Now()
+	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			if !info.Reused {
+				freshConnection.Store(true)
+			}
+		},
+		GotFirstResponseByte: func() {
+			ttfb.Store(int64(time.Since(start)))
+		},
+	}
+	resp, err := client.Do(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+	if err != nil {
+		return nil, 0, err
+	}
+	if keepalive && freshConnection.Load() {
+		resp.Body.Close()
+		return nil, 0, fmt.Errorf("keepalive measurement requires a reused connection; check that the endpoint supports keep-alive")
+	}
+	return resp, time.Duration(ttfb.Load()), nil
+}
+
 func (pc *ProxyChecker) checkByIP(client *http.Client) (bool, string, time.Duration, error) {
 	req, err := http.NewRequest("GET", pc.ipCheck, nil)
 	if err != nil {
 		return false, "", 0, err
 	}
 
-	var ttfb time.Duration
-	start := time.Now()
-	trace := &httptrace.ClientTrace{
-		GotFirstResponseByte: func() {
-			ttfb = time.Since(start)
-		},
-	}
-	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
-
-	resp, err := client.Do(req)
+	resp, ttfb, err := pc.doLatencyRequest(client, req)
 	if err != nil {
 		return false, "", 0, err
 	}
@@ -214,16 +256,7 @@ func (pc *ProxyChecker) checkByGen(client *http.Client) (bool, string, time.Dura
 		return false, "", 0, err
 	}
 
-	var ttfb time.Duration
-	start := time.Now()
-	trace := &httptrace.ClientTrace{
-		GotFirstResponseByte: func() {
-			ttfb = time.Since(start)
-		},
-	}
-	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
-
-	resp, err := client.Do(req)
+	resp, ttfb, err := pc.doLatencyRequest(client, req)
 	if err != nil {
 		return false, "", 0, err
 	}
@@ -243,21 +276,12 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) (bool, string, time
 		return false, "", 0, err
 	}
 
-	var ttfb time.Duration
-	start := time.Now()
-	trace := &httptrace.ClientTrace{
-		GotFirstResponseByte: func() {
-			ttfb = time.Since(start)
-		},
-	}
-	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
-
 	downloadClient := &http.Client{
 		Transport: client.Transport,
 		Timeout:   time.Second * time.Duration(pc.downloadTimeout),
 	}
 
-	resp, err := downloadClient.Do(req)
+	resp, ttfb, err := pc.doLatencyRequest(downloadClient, req)
 	if err != nil {
 		return false, "", 0, err
 	}

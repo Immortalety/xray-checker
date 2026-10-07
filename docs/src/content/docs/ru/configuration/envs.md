@@ -102,6 +102,14 @@ URL, строка Base64 или путь к файлу для конфигура
 - `status`: Проверяет HTTP-код состояния тестового запроса
 - `download`: Скачивает файл и проверяет минимальный размер
 
+### PROXY_PING_MODE
+
+- CLI: `--proxy-ping-mode`
+- По умолчанию: `default`
+- Значения: `default`, `keepalive`
+
+[Описание режима](../check-methods/)
+
 ### PROXY_IP_CHECK_URL
 
 - CLI: `--proxy-ip-check-url`
